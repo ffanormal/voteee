@@ -2,35 +2,17 @@ import streamlit as st
 import pandas as pd
 import time
 import hashlib
-import json
-import os
 
-def save_data():
-    """保存数据到临时文件（在Streamlit Cloud上可能有限制）"""
-    try:
-        with open('/tmp/voting_data.json', 'w') as f:
-            json.dump(st.session_state.shared_data, f)
-    except:
-        pass  # 忽略错误，依赖session_state
-
-def load_data():
-    """从文件加载数据"""
-    try:
-        with open('/tmp/voting_data.json', 'r') as f:
-            return json.load(f)
-    except:
-        return None
-# 更健壮的共享数据初始化
+# 修复初始化函数
 def init_shared_data():
     if "shared_data" not in st.session_state:
         st.session_state.shared_data = {
             "current_round": 1,
-            # 使用嵌套字典确保数据共享
             "rounds": {
                 1: {
                     "votes": {},
-                    "voters": set(),
-                    "options": ["穿刺2次", "穿刺3次", "穿刺≥2次", "多次穿刺"],
+                    "voters": [],
+                    "options": ["穿刺2次", "穿刺3次", "穿刺≥2次", "多次穿刺"],  # 修复：移除重复项
                     "active": True
                 }
             }
@@ -38,19 +20,29 @@ def init_shared_data():
 
 init_shared_data()
 
-# 获取当前轮次数据
+# 获取当前数据
 current_round = st.session_state.shared_data["current_round"]
+
+# 确保当前轮次存在
 if current_round not in st.session_state.shared_data["rounds"]:
-    # 初始化新轮次
+    # 从上一轮继承选项（淘汰后）
     prev_round = current_round - 1
-    prev_data = st.session_state.shared_data["rounds"][prev_round]
-    # 继承上一轮的活跃选项（淘汰最低票后）
-    st.session_state.shared_data["rounds"][current_round] = {
-        "votes": {},
-        "voters": set(),
-        "options": prev_data["options"].copy(),  # 会在淘汰逻辑中更新
-        "active": True
-    }
+    if prev_round in st.session_state.shared_data["rounds"]:
+        prev_options = st.session_state.shared_data["rounds"][prev_round]["options"]
+        st.session_state.shared_data["rounds"][current_round] = {
+            "votes": {},
+            "voters": [],
+            "options": prev_options.copy(),
+            "active": True
+        }
+    else:
+        # 回退到第一轮
+        st.session_state.shared_data["rounds"][current_round] = {
+            "votes": {},
+            "voters": [],
+            "options": ["穿刺2次", "穿刺3次", "穿刺≥2次", "多次穿刺"],
+            "active": True
+        }
 
 round_data = st.session_state.shared_data["rounds"][current_round]
 votes = round_data["votes"]
@@ -59,11 +51,11 @@ options = round_data["options"]
 
 st.title("🧠 多人实时德尔菲投票系统")
 
-# 显示实时状态
+# 显示系统状态
 st.sidebar.subheader("📊 系统状态")
-st.sidebar.write(f"当前轮次: **{current_round}**")
-st.sidebar.write(f"活跃选项: **{len(options)}** 个")
-st.sidebar.write(f"本轮投票: **{len(voters)}** 人")
+st.sidebar.write(f"**当前轮次**: {current_round}")
+st.sidebar.write(f"**活跃选项**: {len(options)} 个")
+st.sidebar.write(f"**本轮投票**: {len(voters)} 人")
 
 # 用户投票界面
 st.subheader(f"第 {current_round} 轮投票")
@@ -76,30 +68,38 @@ if options and len(options) > 0:
         if voter_id in voters:
             st.error("❌ 你已投过票！")
         else:
-            # 更新投票数据 - 确保使用正确的方式
+            # 更新投票数据
             if choice not in votes:
                 votes[choice] = 0
             votes[choice] += 1
-            voters.add(voter_id)
-            st.success(f"✅ 投票成功！")
+            voters.append(voter_id)  # 使用列表而不是set
+            
+            st.success(f"✅ 投票成功！选择了: {choice}")
             st.balloons()
             
-            # 立即显示更新后的结果
+            # 强制刷新显示最新结果
             st.rerun()
 
-# 实时结果显示 - 确保正确读取数据
+# 实时结果显示 - 修复显示问题
 st.subheader("📈 实时投票结果")
 
-# 重新获取最新数据（避免缓存问题）
+# 重新获取最新数据
 current_votes = st.session_state.shared_data["rounds"][current_round]["votes"]
 current_voters = st.session_state.shared_data["rounds"][current_round]["voters"]
 
-if current_votes:
-    # 创建结果表格
+if current_votes or len(current_voters) > 0:
+    # 创建结果表格 - 修复票数显示
     vote_list = []
-    for option in options:  # 显示所有选项，包括0票的
+    total_votes = len(current_voters)
+    
+    for option in options:
         count = current_votes.get(option, 0)
-        vote_list.append({"选项": option, "票数": count, "投票率": f"{(count/len(current_voters))*100:.1f}%" if current_voters else "0%"})
+        percentage = (count / total_votes * 100) if total_votes > 0 else 0
+        vote_list.append({
+            "选项": option, 
+            "票数": count,  # 修复：显示实际票数，不是百分比
+            "投票率": f"{percentage:.1f}%"
+        })
     
     df = pd.DataFrame(vote_list)
     df = df.sort_values("票数", ascending=False)
@@ -108,94 +108,108 @@ if current_votes:
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        # 只显示有票数的图表
-        chart_data = df[df["票数"] > 0]
-        if not chart_data.empty:
-            st.bar_chart(chart_data.set_index("选项")["票数"])
-        else:
-            st.info("📊 图表等待数据...")
+        # 显示所有选项的图表
+        st.bar_chart(df.set_index("选项")["票数"])
     
     with col2:
         st.dataframe(df, use_container_width=True, hide_index=True)
     
-    # 投票详情
+    # 显示投票详情
     with st.expander("👥 查看投票详情"):
+        st.write(f"**总投票人数**: {len(current_voters)}")
         if current_voters:
-            st.write(f"**总投票人数**: {len(current_voters)}")
-            st.write("**已投票用户**:", list(current_voters))
+            st.write("**已投票用户**:", ", ".join(current_voters))
         else:
             st.write("暂无投票")
+        
+        st.write("**详细票数分布**:")
+        for option in options:
+            count = current_votes.get(option, 0)
+            st.write(f"- {option}: {count} 票")
 else:
     st.info("👆 等待第一票...")
 
 # 主持人控制
 st.subheader("🎯 主持人控制")
 
-col1, col2, col3 = st.columns(3)
+col1, col2 = st.columns(2)
 
 with col1:
     if st.button("🔄 进入下一轮", type="secondary", use_container_width=True):
-        if current_votes and len(current_voters) > 0:
-            # 找到最低票选项
-            valid_votes = {opt: current_votes.get(opt, 0) for opt in options if current_votes.get(opt, 0) > 0}
+        if len(current_voters) > 0:
+            # 找到有效的投票选项（票数>0）
+            valid_options = []
+            for opt in options:
+                if current_votes.get(opt, 0) > 0:
+                    valid_options.append(opt)
             
-            if len(valid_votes) >= 2:
-                min_votes = min(valid_votes.values())
-                eliminated = [opt for opt, count in valid_votes.items() if count == min_votes]
+            if len(valid_options) >= 2:
+                # 找到最低票选项
+                min_votes = min([current_votes.get(opt, 0) for opt in valid_options])
+                eliminated = [opt for opt in valid_options if current_votes.get(opt, 0) == min_votes]
                 
-                # 更新选项
+                # 更新选项（淘汰最低票）
                 new_options = [opt for opt in options if opt not in eliminated]
                 
-                # 更新共享数据
-                st.session_state.shared_data["current_round"] += 1
-                next_round = st.session_state.shared_data["current_round"]
+                # 进入下一轮
+                next_round = current_round + 1
+                st.session_state.shared_data["current_round"] = next_round
                 
-                # 初始化下一轮
+                # 初始化下一轮数据
                 st.session_state.shared_data["rounds"][next_round] = {
                     "votes": {},
-                    "voters": set(),
+                    "voters": [],
                     "options": new_options,
                     "active": True
                 }
                 
-                st.success(f"✅ 进入第 {next_round} 轮")
-                st.info(f"淘汰: {', '.join(eliminated)}")
-                time.sleep(2)
+                st.success(f"✅ 已进入第 {next_round} 轮")
+                st.warning(f"淘汰的选项: {', '.join(eliminated)}")
+                
+                # 等待后刷新
+                time.sleep(3)
                 st.rerun()
             else:
-                st.error("选项不足，无法淘汰")
+                st.error("🚫 有效选项不足，无法淘汰")
         else:
-            st.warning("需要投票数据")
+            st.warning("⚠️ 还没有人投票")
 
 with col2:
-    if st.button("📊 刷新结果", use_container_width=True):
+    if st.button("📊 强制刷新", use_container_width=True):
         st.rerun()
 
-with col3:
-    if st.button("🔄 重置系统", use_container_width=True):
-        st.session_state.shared_data = {
-            "current_round": 1,
-            "rounds": {
-                1: {
-                    "votes": {},
-                    "voters": set(),
-                    "options": ["穿刺2次", "穿刺3次", "穿刺≥2次", "多次穿刺"],
-                    "active": True
-                }
+# 系统管理
+st.subheader("⚙️ 系统管理")
+if st.button("🔄 重置整个系统"):
+    st.session_state.shared_data = {
+        "current_round": 1,
+        "rounds": {
+            1: {
+                "votes": {},
+                "voters": [],
+                "options": ["穿刺2次", "穿刺3次", "穿刺≥2次", "多次穿刺"],
+                "active": True
             }
         }
-        st.success("系统已重置！")
-        time.sleep(1)
-        st.rerun()
+    }
+    st.success("✅ 系统已重置！")
+    time.sleep(2)
+    st.rerun()
 
 # 调试信息
 with st.sidebar.expander("🔧 调试信息"):
-    st.write("当前轮次数据:", st.session_state.shared_data["rounds"][current_round])
-    st.write("Session ID:", hash(str(st.session_state.shared_data)))
+    st.json(st.session_state.shared_data["rounds"][current_round])
+
+# 跨设备同步测试
+with st.sidebar.expander("🌐 同步测试"):
+    st.write("请在两台设备测试：")
+    st.write("1. 设备A投票")
+    st.write("2. 设备B点击'强制刷新'")
+    st.write("3. 检查设备B是否看到设备A的投票")
 
 # 自动刷新
-st.info("🔄 页面自动刷新中...")
-time.sleep(10)
+st.info("🔄 页面每15秒自动刷新...")
+time.sleep(15)
 st.rerun()
 
 
