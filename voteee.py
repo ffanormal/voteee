@@ -2,7 +2,24 @@ import streamlit as st
 import pandas as pd
 import time
 import hashlib
+import json
+import os
 
+def save_data():
+    """保存数据到临时文件（在Streamlit Cloud上可能有限制）"""
+    try:
+        with open('/tmp/voting_data.json', 'w') as f:
+            json.dump(st.session_state.shared_data, f)
+    except:
+        pass  # 忽略错误，依赖session_state
+
+def load_data():
+    """从文件加载数据"""
+    try:
+        with open('/tmp/voting_data.json', 'r') as f:
+            return json.load(f)
+    except:
+        return None
 # 更健壮的共享数据初始化
 def init_shared_data():
     if "shared_data" not in st.session_state:
@@ -180,4 +197,5 @@ with st.sidebar.expander("🔧 调试信息"):
 st.info("🔄 页面自动刷新中...")
 time.sleep(10)
 st.rerun()
+
 
